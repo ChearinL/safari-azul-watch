@@ -165,24 +165,32 @@ def _click_fecha_and_select_date(page: Page) -> None:
         if not clicked:
             break
 
-    # Click day 22 regardless of element tag (<button>, <td>, <div>, <span>)
-    day_locs = picker.get_by_text(re.compile(rf"^{TARGET_DAY}$"))
+    # Click day 22 regardless of element tag or surrounding whitespace
+    day_locs = picker.get_by_text(str(TARGET_DAY), exact=True)
+    debug_matches = []
     for i in range(day_locs.count()):
         el = day_locs.nth(i)
-        if not el.is_visible():
-            continue
+        vis = el.is_visible()
         cls = el.get_attribute("class") or ""
         parent_cls = el.locator("xpath=..").get_attribute("class") or ""
+        dis_attr = el.get_attribute("disabled")
+        parent_dis = el.locator("xpath=..").get_attribute("disabled")
+        debug_matches.append(f"vis={vis},cls={cls},pcls={parent_cls},dis={dis_attr},pdis={parent_dis}")
+        if not vis:
+            continue
         if "disabled" in cls or "disabled" in parent_cls:
             continue
-        if el.get_attribute("disabled") is not None:
+        if dis_attr is not None or parent_dis is not None:
             continue
         el.click()
         page.wait_for_timeout(1200)
         return
 
     snippet = " | ".join(picker.inner_text().splitlines())
-    raise RuntimeError(f"Could not find enabled day '{TARGET_DAY}' in datepicker. Full text: {snippet[:500]}")
+    raise RuntimeError(
+        f"Could not find enabled day '{TARGET_DAY}' (matches={len(debug_matches)}: {debug_matches}). "
+        f"Text: {snippet[:300]}"
+    )
 
 
 def _set_transfer_toggle(page: Page, include_transfer: bool) -> None:
