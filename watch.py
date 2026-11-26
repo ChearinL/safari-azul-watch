@@ -112,7 +112,7 @@ def notify_available(found_modes: list[dict[str, Any]]) -> None:
     send_macos_alert(title=title, message=msg)
 
 
-def _click_fecha_and_select_date(page: Page) -> None:
+def _click_fecha_and_select_date(page: Page) -> bool:
     fecha_candidates = [
         page.get_by_label(re.compile(r"fecha", re.I)),
         page.locator("xpath=//label[contains(translate(., 'FECHA', 'fecha'), 'fecha')]/following::input[1]"),
@@ -129,7 +129,7 @@ def _click_fecha_and_select_date(page: Page) -> None:
 
     current_val = (fecha_input.input_value() or "").strip()
     if current_val == TARGET_DATE_STR:
-        return
+        return True
 
     # Open Vuetify datepicker menu if not already expanded
     if fecha_input.get_attribute("aria-expanded") != "true":
@@ -167,30 +167,27 @@ def _click_fecha_and_select_date(page: Page) -> None:
 
     # Click day 22 regardless of element tag or surrounding whitespace
     day_locs = picker.get_by_text(str(TARGET_DAY), exact=True)
-    debug_matches = []
+    found_visible_disabled = False
     for i in range(day_locs.count()):
         el = day_locs.nth(i)
-        vis = el.is_visible()
+        if not el.is_visible():
+            continue
         cls = el.get_attribute("class") or ""
         parent_cls = el.locator("xpath=..").get_attribute("class") or ""
         dis_attr = el.get_attribute("disabled")
         parent_dis = el.locator("xpath=..").get_attribute("disabled")
-        debug_matches.append(f"vis={vis},cls={cls},pcls={parent_cls},dis={dis_attr},pdis={parent_dis}")
-        if not vis:
-            continue
-        if "disabled" in cls or "disabled" in parent_cls:
-            continue
-        if dis_attr is not None or parent_dis is not None:
+        if "disabled" in cls or "disabled" in parent_cls or dis_attr is not None or parent_dis is not None:
+            found_visible_disabled = True
             continue
         el.click()
         page.wait_for_timeout(1200)
-        return
+        return True
+
+    if found_visible_disabled:
+        return False
 
     snippet = " | ".join(picker.inner_text().splitlines())
-    raise RuntimeError(
-        f"Could not find enabled day '{TARGET_DAY}' (matches={len(debug_matches)}: {debug_matches}). "
-        f"Text: {snippet[:300]}"
-    )
+    raise RuntimeError(f"Could not find day '{TARGET_DAY}' in datepicker. Text: {snippet[:300]}")
 
 
 def _set_transfer_toggle(page: Page, include_transfer: bool) -> None:
@@ -219,19 +216,20 @@ def _set_transfer_toggle(page: Page, include_transfer: bool) -> None:
 def _read_hora_options(page: Page) -> list[dict[str, Any]]:
     options: list[dict[str, Any]] = []
 
-    # Case 1: Vuetify v-select / combobox near Hora
+    # Case 1: Vuetify v-select / combobox near Hora (click .v-input__icon--append / mdi-menu-down)
     trigger_candidates = [
+        page.locator("xpath=//*[contains(translate(text(), 'HORA', 'hora'), 'hora')]/ancestor::*[contains(@class, 'v-input')][1]//*[contains(@class, 'v-input__icon--append')]"),
+        page.locator("xpath=//label[contains(translate(., 'HORA', 'hora'), 'hora')]/ancestor::*[contains(@class, 'v-select') or contains(@class, 'v-input')][1]//*[contains(@class, 'v-input__icon--append')]"),
+        page.locator(".v-select").filter(has_text=re.compile(r"hora", re.I)).locator(".v-input__icon--append"),
         page.locator("xpath=//*[contains(translate(text(), 'HORA', 'hora'), 'hora')]/ancestor::*[contains(@class, 'v-input')][1]"),
-        page.locator("xpath=//label[contains(translate(., 'HORA', 'hora'), 'hora')]/ancestor::*[contains(@class, 'v-select') or contains(@class, 'v-input')][1]"),
         page.get_by_role("combobox", name=re.compile(r"hora", re.I)),
-        page.locator(".v-select").filter(has_text=re.compile(r"hora", re.I)).first,
     ]
     for trig in trigger_candidates:
         if trig.count() > 0 and trig.first.is_visible():
-            trig.first.click()
+            trig.first.click(force=True)
             page.wait_for_timeout(600)
             menu_items = page.locator(
-                ".v-overlay__content:visible .v-list-item, .v-menu__content.menuable__content__active .v-list-item, "
+                ".v-overlay__content:visible .v-list-item, .v-menu__content.menuable__content__active:visible .v-list-item, "
                 ".v-select-list .v-list-item, "
                 "[role='listbox'] [role='option'], "
                 "[role='option']"
@@ -286,18 +284,28 @@ def check_once(transfer_mode: str = "with") -> dict[str, Any]:
         page.set_default_timeout(20000)
 
         try:
-            page.goto(BUY_URL, wait_until="networkidle", timeout=35000)
+            page.goto(PRODUCT_URL, wait_until="networkidle", timeout=35000)
         except PlaywrightTimeoutError:
-            page.goto(BUY_URL, wait_until="domcontentloaded", timeout=35000)
+            page.goto(PRODUCT_URL, wait_until="domcontentloaded", timeout=35000)
         page.wait_for_timeout(1500)
-
-        if "safari-azul" not in page.url:
-            page.goto(PRODUCT_URL, wait_until="domcontentloaded", timeout=30000)
-            page.wait_for_timeout(1500)
 
         for include_transfer in modes_to_check:
             _set_transfer_toggle(page, include_transfer)
-            _click_fecha_and_select_date(page)
+            date_enabled = _click_fecha_and_select_date(page)
+            if not date_enabled:
+                results.append(
+                    {
+                        "transfer": include_transfer,
+                        "key": "with_transfer" if include_transfer else "without_transfer",
+                        "date_disabled": True,
+                        "options": [],
+                        "all_options": [],
+                        "target_available": False,
+                        "spots": "",
+                    }
+                )
+                continue
+
             opts = _read_hora_options(page)
             available_opts = [o["text"] for o in opts if not o["disabled"]]
             target_hit = any(TARGET_TIME_RE.search(o["text"]) and not o["disabled"] for o in opts)
@@ -309,6 +317,7 @@ def check_once(transfer_mode: str = "with") -> dict[str, Any]:
                 {
                     "transfer": include_transfer,
                     "key": "with_transfer" if include_transfer else "without_transfer",
+                    "date_disabled": False,
                     "options": available_opts,
                     "all_options": opts,
                     "target_available": target_hit,
@@ -347,7 +356,7 @@ def main() -> int:
             data = check_once(transfer_mode=args.transfer_mode)
             consecutive_errors = 0
 
-            if not any(r["all_options"] for r in data["results"]):
+            if not any(r["all_options"] or r.get("date_disabled") for r in data["results"]):
                 consecutive_not_found += 1
                 log(f"Warning: no Hora options parsed for {TARGET_DATE_STR} (streak={consecutive_not_found}).")
                 if args.once or consecutive_not_found >= 3:
@@ -360,8 +369,9 @@ def main() -> int:
                 key = r["key"]
                 prev_status = state.get(key, "UNAVAILABLE")
                 curr_status = "AVAILABLE" if r["target_available"] else "UNAVAILABLE"
+                status_detail = "DATE_DISABLED (sold out)" if r.get("date_disabled") else f"options={r['options']}"
                 log(
-                    f"[{key}] {TARGET_DATE_STR} -> options={r['options']} | "
+                    f"[{key}] {TARGET_DATE_STR} -> {status_detail} | "
                     f"09:00={curr_status} (prev={prev_status})"
                 )
                 state[key] = curr_status
