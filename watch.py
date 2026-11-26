@@ -165,17 +165,24 @@ def _click_fecha_and_select_date(page: Page) -> None:
         if not clicked:
             break
 
-    # Click day 22 across Vuetify 2 (table) and Vuetify 3 (div grid)
-    day_btns = picker.locator("button:not([disabled])")
-    for i in range(day_btns.count()):
-        btn = day_btns.nth(i)
-        if btn.is_visible() and btn.inner_text().strip() == str(TARGET_DAY):
-            btn.click()
-            page.wait_for_timeout(1000)
-            return
+    # Click day 22 regardless of element tag (<button>, <td>, <div>, <span>)
+    day_locs = picker.get_by_text(re.compile(rf"^{TARGET_DAY}$"))
+    for i in range(day_locs.count()):
+        el = day_locs.nth(i)
+        if not el.is_visible():
+            continue
+        cls = el.get_attribute("class") or ""
+        parent_cls = el.locator("xpath=..").get_attribute("class") or ""
+        if "disabled" in cls or "disabled" in parent_cls:
+            continue
+        if el.get_attribute("disabled") is not None:
+            continue
+        el.click()
+        page.wait_for_timeout(1200)
+        return
 
-    snippet = " | ".join(picker.inner_text().splitlines()[:12])
-    raise RuntimeError(f"Could not find enabled day '{TARGET_DAY}' in datepicker. Text: {snippet}")
+    snippet = " | ".join(picker.inner_text().splitlines())
+    raise RuntimeError(f"Could not find enabled day '{TARGET_DAY}' in datepicker. Full text: {snippet[:500]}")
 
 
 def _set_transfer_toggle(page: Page, include_transfer: bool) -> None:
