@@ -136,24 +136,24 @@ def _click_fecha_and_select_date(page: Page) -> None:
         fecha_input.click()
         page.wait_for_timeout(600)
 
-    # Wait for Vuetify date picker container
-    picker = page.locator(".v-date-picker, .v-picker, [role='menu'], .v-menu__content").filter(
-        has=page.locator("button")
-    ).last
+    # Wait for visible Vuetify 2/3 date picker container
+    picker = page.locator(
+        ".v-date-picker:visible, .v-picker:visible, "
+        ".v-menu__content.menuable__content__active:visible, .v-overlay__content:visible"
+    ).filter(has=page.locator("button")).last
     picker.wait_for(state="visible", timeout=10000)
 
-    # Navigate calendar header to December 2026
-    month_pattern = re.compile(r"(diciembre|december).*2026|2026.*(diciembre|december)", re.I)
+    # Navigate calendar header to December 2026 (works even if month and year are on separate lines)
+    month_re = re.compile(r"(diciembre|december|\bdic\b)", re.I)
     for _ in range(14):
-        header_loc = picker.locator(".v-date-picker-header, [class*='header']").first
-        header_text = header_loc.inner_text() if header_loc.count() > 0 else picker.inner_text()
-        if month_pattern.search(header_text):
+        picker_text = picker.inner_text()
+        if month_re.search(picker_text) and str(TARGET_YEAR) in picker_text:
             break
 
         next_btns = [
-            picker.locator(".v-date-picker-header button:not([disabled])").last,
             picker.locator("button[aria-label*='next' i], button[aria-label*='siguiente' i]").first,
             picker.locator("button:has(.mdi-chevron-right), button:has(.fa-chevron-right)").first,
+            picker.locator(".v-date-picker-controls button:not([disabled]), .v-date-picker-header button:not([disabled])").last,
         ]
         clicked = False
         for nb in next_btns:
@@ -165,8 +165,8 @@ def _click_fecha_and_select_date(page: Page) -> None:
         if not clicked:
             break
 
-    # Click day 22 inside Vuetify date picker table
-    day_btns = picker.locator(".v-date-picker-table button:not([disabled]), table button:not([disabled])")
+    # Click day 22 across Vuetify 2 (table) and Vuetify 3 (div grid)
+    day_btns = picker.locator("button:not([disabled])")
     for i in range(day_btns.count()):
         btn = day_btns.nth(i)
         if btn.is_visible() and btn.inner_text().strip() == str(TARGET_DAY):
@@ -174,7 +174,8 @@ def _click_fecha_and_select_date(page: Page) -> None:
             page.wait_for_timeout(1000)
             return
 
-    raise RuntimeError(f"Could not find enabled day '{TARGET_DAY}' in Vuetify datepicker.")
+    snippet = " | ".join(picker.inner_text().splitlines()[:12])
+    raise RuntimeError(f"Could not find enabled day '{TARGET_DAY}' in datepicker. Text: {snippet}")
 
 
 def _set_transfer_toggle(page: Page, include_transfer: bool) -> None:
@@ -215,7 +216,7 @@ def _read_hora_options(page: Page) -> list[dict[str, Any]]:
             trig.first.click()
             page.wait_for_timeout(600)
             menu_items = page.locator(
-                ".v-menu__content.menuable__content__active .v-list-item, "
+                ".v-overlay__content:visible .v-list-item, .v-menu__content.menuable__content__active .v-list-item, "
                 ".v-select-list .v-list-item, "
                 "[role='listbox'] [role='option'], "
                 "[role='option']"
