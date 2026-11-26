@@ -115,7 +115,6 @@ def notify_available(found_modes: list[dict[str, Any]]) -> None:
 def _click_fecha_and_select_date(page: Page) -> None:
     fecha_candidates = [
         page.get_by_label(re.compile(r"fecha", re.I)),
-        page.locator("input[placeholder*='dd' i], input[placeholder*='fecha' i], input[name*='fecha' i], input[id*='fecha' i]"),
         page.locator("xpath=//label[contains(translate(., 'FECHA', 'fecha'), 'fecha')]/following::input[1]"),
         page.locator("xpath=//*[contains(translate(text(), 'FECHA', 'fecha'), 'fecha')]/following::input[1]"),
     ]
@@ -132,51 +131,50 @@ def _click_fecha_and_select_date(page: Page) -> None:
     if current_val == TARGET_DATE_STR:
         return
 
-    fecha_input.click()
-    page.wait_for_timeout(600)
+    # Open Vuetify datepicker menu if not already expanded
+    if fecha_input.get_attribute("aria-expanded") != "true":
+        fecha_input.click()
+        page.wait_for_timeout(600)
 
+    # Wait for Vuetify date picker container
+    picker = page.locator(".v-date-picker, .v-picker, [role='menu'], .v-menu__content").filter(
+        has=page.locator("button")
+    ).last
+    picker.wait_for(state="visible", timeout=10000)
+
+    # Navigate calendar header to December 2026
     month_pattern = re.compile(r"(diciembre|december).*2026|2026.*(diciembre|december)", re.I)
     for _ in range(14):
-        body_text = page.locator("body").inner_text()
-        if month_pattern.search(body_text):
+        header_loc = picker.locator(".v-date-picker-header, [class*='header']").first
+        header_text = header_loc.inner_text() if header_loc.count() > 0 else picker.inner_text()
+        if month_pattern.search(header_text):
             break
+
         next_btns = [
-            page.locator("button[aria-label*='next' i], button[aria-label*='siguiente' i], .react-datepicker__navigation--next, .p-datepicker-next, button.rdp-nav_button_next"),
-            page.locator("xpath=//button[normalize-space()='>' or normalize-space()='›' or normalize-space()='»']"),
+            picker.locator(".v-date-picker-header button:not([disabled])").last,
+            picker.locator("button[aria-label*='next' i], button[aria-label*='siguiente' i]").first,
+            picker.locator("button:has(.mdi-chevron-right), button:has(.fa-chevron-right)").first,
         ]
         clicked = False
         for nb in next_btns:
-            if nb.count() > 0 and nb.last.is_visible() and nb.last.is_enabled():
-                nb.last.click()
-                page.wait_for_timeout(350)
+            if nb.count() > 0 and nb.is_visible() and nb.is_enabled():
+                nb.click()
+                page.wait_for_timeout(400)
                 clicked = True
                 break
         if not clicked:
             break
 
-    day_selectors = [
-        f".react-datepicker__day--0{TARGET_DAY}:not(.react-datepicker__day--outside-month):not(.react-datepicker__day--disabled)",
-        f"[role='gridcell'] button:has-text('{TARGET_DAY}'):not([disabled])",
-        f".p-datepicker-calendar td:not(.p-datepicker-other-month) span:text-is('{TARGET_DAY}')",
-        f"button:text-is('{TARGET_DAY}'):not([disabled])",
-        f"td:text-is('{TARGET_DAY}')",
-    ]
-    for sel in day_selectors:
-        loc = page.locator(sel)
-        if loc.count() > 0:
-            for i in range(loc.count()):
-                el = loc.nth(i)
-                if el.is_visible():
-                    el.click()
-                    page.wait_for_timeout(800)
-                    return
+    # Click day 22 inside Vuetify date picker table
+    day_btns = picker.locator(".v-date-picker-table button:not([disabled]), table button:not([disabled])")
+    for i in range(day_btns.count()):
+        btn = day_btns.nth(i)
+        if btn.is_visible() and btn.inner_text().strip() == str(TARGET_DAY):
+            btn.click()
+            page.wait_for_timeout(1000)
+            return
 
-    try:
-        fecha_input.fill(TARGET_DATE_STR)
-        fecha_input.press("Enter")
-        page.wait_for_timeout(800)
-    except Exception as exc:
-        raise RuntimeError(f"Could not select {TARGET_DATE_STR} in datepicker: {exc}") from exc
+    raise RuntimeError(f"Could not find enabled day '{TARGET_DAY}' in Vuetify datepicker.")
 
 
 def _set_transfer_toggle(page: Page, include_transfer: bool) -> None:
@@ -186,20 +184,18 @@ def _set_transfer_toggle(page: Page, include_transfer: bool) -> None:
         page.locator("xpath=//*[contains(translate(., 'TRASLADO', 'traslado'), 'traslado')]//input[@type='checkbox']"),
         page.locator("xpath=//*[contains(translate(., 'TRASLADO', 'traslado'), 'traslado')]/following::input[@type='checkbox'][1]"),
         page.locator("xpath=//*[contains(translate(., 'TRASLADO', 'traslado'), 'traslado')]/preceding::input[@type='checkbox'][1]"),
-        page.locator("xpath=//*[contains(translate(., 'TRASLADO', 'traslado'), 'traslado')]//*[@role='switch'][1]"),
+        page.locator(".v-input--switch input[type='checkbox']").first,
     ]
     for cand in toggle_candidates:
         if cand.count() > 0:
             el = cand.first
             try:
-                checked = el.is_checked() if el.evaluate("e => e.tagName === 'INPUT'") else (
-                    el.get_attribute("aria-checked") == "true"
-                )
+                checked = el.is_checked()
             except Exception:
-                checked = None
-            if checked is not None and checked != include_transfer:
+                checked = el.get_attribute("aria-checked") == "true"
+            if checked != include_transfer:
                 el.click(force=True)
-                page.wait_for_timeout(900)
+                page.wait_for_timeout(1000)
             return
     log("Warning: could not explicitly verify transfer toggle state; continuing.")
 
@@ -207,10 +203,46 @@ def _set_transfer_toggle(page: Page, include_transfer: bool) -> None:
 def _read_hora_options(page: Page) -> list[dict[str, Any]]:
     options: list[dict[str, Any]] = []
 
+    # Case 1: Vuetify v-select / combobox near Hora
+    trigger_candidates = [
+        page.locator("xpath=//*[contains(translate(text(), 'HORA', 'hora'), 'hora')]/ancestor::*[contains(@class, 'v-input')][1]"),
+        page.locator("xpath=//label[contains(translate(., 'HORA', 'hora'), 'hora')]/ancestor::*[contains(@class, 'v-select') or contains(@class, 'v-input')][1]"),
+        page.get_by_role("combobox", name=re.compile(r"hora", re.I)),
+        page.locator(".v-select").filter(has_text=re.compile(r"hora", re.I)).first,
+    ]
+    for trig in trigger_candidates:
+        if trig.count() > 0 and trig.first.is_visible():
+            trig.first.click()
+            page.wait_for_timeout(600)
+            menu_items = page.locator(
+                ".v-menu__content.menuable__content__active .v-list-item, "
+                ".v-select-list .v-list-item, "
+                "[role='listbox'] [role='option'], "
+                "[role='option']"
+            )
+            for i in range(menu_items.count()):
+                item = menu_items.nth(i)
+                if not item.is_visible():
+                    continue
+                text = (item.inner_text() or "").strip()
+                if re.search(r"\b\d{1,2}:\d{2}\b", text):
+                    classes = item.get_attribute("class") or ""
+                    aria_dis = item.get_attribute("aria-disabled") == "true"
+                    disabled = (
+                        aria_dis
+                        or "v-list-item--disabled" in classes
+                        or bool(re.search(r"agotad|sin cupo|no disponible", text, re.I))
+                    )
+                    options.append({"text": text, "disabled": disabled})
+            page.keyboard.press("Escape")
+            page.wait_for_timeout(300)
+            if options:
+                return options
+
+    # Case 2: Fallback native <select>
     select_candidates = [
         page.get_by_label(re.compile(r"hora", re.I)),
         page.locator("select[name*='hora' i], select[id*='hora' i]"),
-        page.locator("xpath=//*[contains(translate(text(), 'HORA', 'hora'), 'hora')]/following::select[1]"),
     ]
     for cand in select_candidates:
         if cand.count() > 0 and cand.first.is_visible():
@@ -223,29 +255,6 @@ def _read_hora_options(page: Page) -> list[dict[str, Any]]:
                 disabled = o.is_disabled() or bool(re.search(r"agotad|sin cupo|no disponible", text, re.I))
                 options.append({"text": text, "disabled": disabled})
             return options
-
-    trigger_candidates = [
-        page.get_by_role("combobox", name=re.compile(r"hora", re.I)),
-        page.locator("xpath=//*[contains(translate(text(), 'HORA', 'hora'), 'hora')]/following::*[@role='combobox' or @role='button' or self::button][1]"),
-    ]
-    for trig in trigger_candidates:
-        if trig.count() > 0 and trig.first.is_visible():
-            trig.first.click()
-            page.wait_for_timeout(500)
-            item_locs = page.locator("[role='option'], [role='menuitem'], ul li")
-            for i in range(item_locs.count()):
-                item = item_locs.nth(i)
-                if not item.is_visible():
-                    continue
-                text = (item.inner_text() or "").strip()
-                if re.search(r"\b\d{1,2}:\d{2}\b", text):
-                    aria_dis = item.get_attribute("aria-disabled") == "true"
-                    disabled = aria_dis or bool(re.search(r"agotad|sin cupo|no disponible", text, re.I))
-                    options.append({"text": text, "disabled": disabled})
-            page.keyboard.press("Escape")
-            page.wait_for_timeout(300)
-            if options:
-                return options
 
     return options
 
